@@ -1,0 +1,14 @@
+# Run lbsync weekly alongside an existing Navidrome.
+#   docker compose run --rm lbsync      # one sync, then exits
+services:
+  lbsync:
+    image: ghcr.io/loneexile/lbsync:latest
+    environment:
+      SUBSONIC_URL: http://navidrome:4533
+      SUBSONIC_USER: admin
+      SUBSONIC_PASSWORD: ${NAVIDROME_PASSWORD:?set NAVIDROME_PASSWORD}
+      LISTENBRAINZ_USER: ${LISTENBRAINZ_USER:?set LISTENBRAINZ_USER}
+      # PLAYLISTS: "weekly-jams,weekly-exploration"   # default: everything offered
+      # PLAYLIST_PUBLIC: "true"                       # default
+      # DRY_RUN: "true"                               # report only, write nothing
+    restart: "no"

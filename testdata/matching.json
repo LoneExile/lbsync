@@ -1,0 +1,66 @@
+{
+  "_comment": "Golden contract for the matcher. Every case here is a real behaviour that was observed against a live server (or a near-miss that would have shipped). Changing behaviour means changing this file deliberately.",
+  "normalize": [
+    { "why": "trailing punctuation: ListenBrainz titles carry it, library tags often do not", "a": "Worth It.", "b": "Worth It", "equal": true },
+    { "why": "non-breaking hyphen U+2010, which ListenBrainz emits, vs a plain hyphen", "a": "Ne‐Yo", "b": "Ne-Yo", "equal": true },
+    { "why": "case difference", "a": "Chappell Roan", "b": "chappell roan", "equal": true },
+    { "why": "internal whitespace difference", "a": "Ariana  Grande", "b": "Ariana Grande", "equal": true },
+    { "why": "identical CJK must still match", "a": "残響散歌", "b": "残響散歌", "equal": true },
+    { "why": "CJK titles contain no a-z0-9, so stripping collapses both to '' — without the empty-string guard these compare EQUAL and bind the wrong song", "a": "残響散歌", "b": "朝が来る", "equal": false },
+    { "why": "different CJK artists must not collapse and match", "a": "Aimer", "b": "米津玄師", "equal": false },
+    { "why": "plainly different latin titles", "a": "Flowers", "b": "505", "equal": false }
+  ],
+  "resolve": [
+    {
+      "why": "exact match is found",
+      "want": { "artist": "Miley Cyrus", "title": "Flowers" },
+      "candidates": [{ "id": "s1", "artist": "Miley Cyrus", "title": "Flowers" }],
+      "expect_id": "s1"
+    },
+    {
+      "why": "THE IMPOSTOR: same title, different artist. Observed live — a same-title fallback put Kings of Leon's 'Notion' into the playlist for The Rare Occasions'. Must resolve to nothing.",
+      "want": { "artist": "The Rare Occasions", "title": "Notion" },
+      "candidates": [{ "id": "wrong", "artist": "Kings of Leon", "title": "Notion" }],
+      "expect_id": null
+    },
+    {
+      "why": "the real track wins even when the impostor is returned first",
+      "want": { "artist": "The Rare Occasions", "title": "Notion" },
+      "candidates": [
+        { "id": "wrong", "artist": "Kings of Leon", "title": "Notion" },
+        { "id": "right", "artist": "The Rare Occasions", "title": "Notion" }
+      ],
+      "expect_id": "right"
+    },
+    {
+      "why": "punctuation difference on both fields still matches",
+      "want": { "artist": "RAYE", "title": "Worth It." },
+      "candidates": [{ "id": "s2", "artist": "RAYE", "title": "Worth It" }],
+      "expect_id": "s2"
+    },
+    {
+      "why": "CJK exact match resolves",
+      "want": { "artist": "Aimer", "title": "残響散歌" },
+      "candidates": [{ "id": "cjk1", "artist": "Aimer", "title": "残響散歌" }],
+      "expect_id": "cjk1"
+    },
+    {
+      "why": "CJK wrong title with the SAME artist must not resolve (the empty-collapse bug)",
+      "want": { "artist": "Aimer", "title": "朝が来る" },
+      "candidates": [{ "id": "cjk-other", "artist": "Aimer", "title": "残響散歌" }],
+      "expect_id": null
+    },
+    {
+      "why": "nothing in the library",
+      "want": { "artist": "Tame Impala", "title": "Borderline" },
+      "candidates": [],
+      "expect_id": null
+    },
+    {
+      "why": "empty artist on the candidate must not match a real artist",
+      "want": { "artist": "Katy Perry", "title": "Teenage Dream" },
+      "candidates": [{ "id": "x", "artist": "", "title": "Teenage Dream" }],
+      "expect_id": null
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+.git
+.github
+examples
+testdata
+*_test.go
+lbsync
