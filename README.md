@@ -27,6 +27,31 @@ ListenBrainz offers for 'you': weekly-exploration, weekly-jams
     OK: 'Weekly Exploration for you' now has 5 tracks (public)
 ```
 
+## What it writes
+
+For each generated type, up to two playlists — mirroring the four cards
+ListenBrainz shows:
+
+| ListenBrainz card | Subsonic playlist |
+|---|---|
+| Weekly Jams | `Weekly Jams for <user>` |
+| Last Week's Jams | `Last Week's Jams for <user>` |
+| Weekly Exploration | `Weekly Exploration for <user>` |
+| Last Week's Exploration | `Last Week's Exploration for <user>` |
+
+Names are **role-based and stable, not dated**. Each run overwrites the
+current-week playlist in place and rotates the previous week into the
+"Last Week's" one, so:
+
+- nothing is ever orphaned when the scheme changes;
+- the list stays at a fixed size — older weeks disappear on their own as the
+  "Last Week's" playlist is overwritten, with no pruning to get wrong.
+
+ListenBrainz expires entries about two weeks out and stops offering them, so
+when only one entry is left the "Last Week's" playlist is simply not written —
+never emptied, since that would destroy the only copy of those tracks. Set
+`INCLUDE_LAST_WEEK=false` for one playlist per type.
+
 ## Expect a short playlist
 
 This is the most surprising thing about the tool, so it is up front: **the
@@ -73,7 +98,8 @@ CGO_ENABLED=0 go build -o lbsync . && ./lbsync
 | `PLAYLIST_PUBLIC` | `true` | Make playlists visible to all users of the server |
 | `DRY_RUN` | `false` | Resolve and report without writing anything |
 | `MIN_MATCHED` | `1` | Refuse to write below this many tracks (see *Safety*) |
-| `REJECTIONS_PATH` | — | Write unmatched tracks as a JSON worklist to this path |
+| `INCLUDE_LAST_WEEK` | `true` | Also keep last week's lists (see *What it writes*) |
+| `REJECTIONS_PATH` | — | **Directory** for the unmatched-tracks worklist, one file per playlist |
 
 Run with `DRY_RUN=true` first to see what would happen.
 
@@ -84,8 +110,12 @@ have listened to (or been recommended) but do not own. That makes the rejections
 an **acquisition list**, so they are a first-class output rather than a log line:
 
 ```sh
-REJECTIONS_PATH=/out/rejections.json
+REJECTIONS_PATH=/out        # a DIRECTORY — one file per playlist
 ```
+
+Each playlist gets its own file (`weekly-jams-for-you.json`,
+`last-week-s-jams-for-you.json`). A single shared path would mean each playlist
+in a run overwrites the previous one's list.
 
 ```json
 {
@@ -180,11 +210,9 @@ hand-auditing live output hours apart, and both are caught here in milliseconds.
 
 - Only **generated** playlists (`Created for you`). Hand-made ListenBrainz
   playlists are not synced.
-- **One playlist per type, updated in place** — the newest Weekly Jams replaces
-  last week's. ListenBrainz expires older entries (~2 weeks) and drops them from
-  its API entirely, so a per-week mirror would need a deliberate decision about
-  what happens to the Navidrome copies when a source disappears. Not implemented
-  on purpose.
+- **Two playlists per type (current + last week), updated in place** — older
+  weeks are not archived. Dated per-week names would accumulate a playlist per
+  week and need pruning; role-based names keep the list fixed instead.
 - Unmatched tracks are dropped; nothing is downloaded (but see the worklist).
 - Playlists are owned by `SUBSONIC_USER`, so keep `PLAYLIST_PUBLIC=true` unless
   that account is the only one you use.

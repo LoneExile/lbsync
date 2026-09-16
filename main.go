@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ type config struct {
 	subsonicPassword string
 	lbUser           string
 	playlists        []string
+	includeLastWeek  bool
 	public           bool
 	dryRun           bool
 	minMatched       int
@@ -50,6 +52,7 @@ func loadConfig() (config, error) {
 		subsonicUser:     env("SUBSONIC_USER", ""),
 		subsonicPassword: env("SUBSONIC_PASSWORD", ""),
 		lbUser:           env("LISTENBRAINZ_USER", ""),
+		includeLastWeek:  envBool("INCLUDE_LAST_WEEK", true),
 		public:           envBool("PLAYLIST_PUBLIC", true),
 		dryRun:           envBool("DRY_RUN", false),
 		rejectionsPath:   env("REJECTIONS_PATH", ""),
@@ -103,37 +106,30 @@ type worklist struct {
 
 func logf(format string, a ...any) { fmt.Printf(format+"\n", a...) }
 
-func syncOne(cfg config, sub *Subsonic, gen Generated) (bool, error) {
-	name := fmt.Sprintf("%s for %s", gen.Label(), cfg.lbUser)
-	logf("  %s", gen.Label())
-	logf("    source : %s  (%s)", gen.Title, firstN(gen.Date, 19))
-
-	lbTracks, err := Tracks(gen.MBID)
-	if err != nil {
-		return false, err
-	}
-	logf("    tracks : %d on ListenBrainz", len(lbTracks))
-	if len(lbTracks) == 0 {
-		logf("    nothing to do (empty playlist)")
-		return true, nil
-	}
-
+// resolveAll maps ListenBrainz tracks onto library song IDs, returning the
+// matched IDs (de-duplicated, in order) and the tracks that are not owned.
+//
+// Split out of syncOne so the resolution rules can be exercised without a
+// network — the matcher tests cover Normalize/Matches, but only this can cover
+// how a whole track list is assembled.
+func resolveAll(sub *Subsonic, want []Track) ([]string, []rejection) {
 	var ids []string
 	seen := map[string]bool{}
 	var rejected []rejection
 	cache := map[string][]Candidate{}
-	for _, want := range lbTracks {
-		key := Normalize(want.Title)
+	for _, w := range want {
+		key := Normalize(w.Title)
 		cands, ok := cache[key]
 		if !ok {
-			cands, err = sub.Search3(want.Title)
+			var err error
+			cands, err = sub.Search3(w.Title)
 			if err != nil {
-				logf("    search failed for %q: %v", want.Title, err)
+				logf("    search failed for %q: %v", w.Title, err)
 				cands = nil
 			}
 			cache[key] = cands
 		}
-		if id, found := Resolve(want, cands); found {
+		if id, found := Resolve(w, cands); found {
 			if !seen[id] {
 				seen[id] = true
 				ids = append(ids, id)
@@ -141,10 +137,36 @@ func syncOne(cfg config, sub *Subsonic, gen Generated) (bool, error) {
 			continue
 		}
 		rejected = append(rejected, rejection{
-			Artist: want.Artist, Title: want.Title,
-			Album: want.Album, RecordingMBID: want.RecordingMBID,
+			Artist: w.Artist, Title: w.Title,
+			Album: w.Album, RecordingMBID: w.RecordingMBID,
 		})
 	}
+	return ids, rejected
+}
+
+func syncOne(cfg config, sub *Subsonic, a Assignment) (bool, error) {
+	logf("  %s", a.Source.Label())
+	logf("    source : %s  (%s)", a.Source.Title, firstN(a.Source.Date, 19))
+	lbTracks, err := Tracks(a.Source.MBID)
+	if err != nil {
+		return false, err
+	}
+	return syncTracks(cfg, sub, a.Name, a.Source, lbTracks)
+}
+
+// syncTracks writes one playlist and verifies the result.
+//
+// It takes the track list explicitly rather than fetching it, so the WRITE path
+// can be driven by a fake server. That matters: the two nastiest bugs here were
+// both in the write path (createPlaylist requiring `name`, and silently ignoring
+// `public`) and neither is visible to a matcher test.
+func syncTracks(cfg config, sub *Subsonic, name string, gen Generated, lbTracks []Track) (bool, error) {
+	logf("    tracks : %d on ListenBrainz", len(lbTracks))
+	if len(lbTracks) == 0 {
+		logf("    nothing to do (empty playlist)")
+		return true, nil
+	}
+	ids, rejected := resolveAll(sub, lbTracks)
 	logf("    owned  : %d of %d (not in library: %d)", len(ids), len(lbTracks), len(rejected))
 
 	if cfg.rejectionsPath != "" && len(rejected) > 0 {
@@ -157,11 +179,17 @@ func syncOne(cfg config, sub *Subsonic, gen Generated) (bool, error) {
 			Matched:          len(ids),
 			NotInLibrary:     rejected,
 		}
+		// REJECTIONS_PATH is a DIRECTORY: one file per playlist. A single shared
+		// path meant each playlist in a run overwrote the previous one's list,
+		// so all but the last were silently lost.
 		b, _ := json.MarshalIndent(wl, "", "  ")
-		if err := os.WriteFile(cfg.rejectionsPath, append(b, '\n'), 0o644); err != nil {
+		dest := filepath.Join(cfg.rejectionsPath, slug(name)+".json")
+		if err := os.MkdirAll(cfg.rejectionsPath, 0o755); err != nil {
+			logf("    WARNING: could not create worklist dir: %v", err)
+		} else if err := os.WriteFile(dest, append(b, '\n'), 0o644); err != nil {
 			logf("    WARNING: could not write rejections worklist: %v", err)
 		} else {
-			logf("    worklist: %d unmatched tracks -> %s", len(rejected), cfg.rejectionsPath)
+			logf("    worklist: %d unmatched tracks -> %s", len(rejected), dest)
 		}
 	}
 
@@ -287,23 +315,26 @@ func run() int {
 	logf("")
 	failures := 0
 	for _, t := range selected {
-		// Newest first: available is already sorted by date descending.
-		var newest Generated
+		// available is already sorted newest-first.
+		var gens []Generated
 		for _, g := range available {
 			if g.Type == t {
-				newest = g
-				break
+				gens = append(gens, g)
 			}
 		}
-		ok, err := syncOne(cfg, sub, newest)
-		if err != nil {
-			logf("    FAILED: %v", err)
-			ok = false
+		// Newest fills the stable current-week name (replacing last week's
+		// content in place); second-newest fills the stable "Last Week's" name.
+		for _, a := range Assign(cfg.lbUser, gens, cfg.includeLastWeek) {
+			ok, err := syncOne(cfg, sub, a)
+			if err != nil {
+				logf("    FAILED: %v", err)
+				ok = false
+			}
+			if !ok {
+				failures++
+			}
+			logf("")
 		}
-		if !ok {
-			failures++
-		}
-		logf("")
 	}
 
 	if failures > 0 {

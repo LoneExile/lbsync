@@ -64,3 +64,23 @@ jobs:
           sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The runtime image is FROM scratch with no shell and no /tmp. If it were
+      # missing its binary, its CA bundle, or could not transfer, nothing would
+      # notice until the weekly CronJob first fired at 05:30 — this makes the
+      # failure happen here instead. Built separately for the local arch because
+      # a multi-platform build cannot be --load-ed.
+      - name: Smoke test the image
+        env:
+          IMAGE: lbsync:smoke
+        run: |
+          docker buildx build --platform linux/amd64 --load -t "$IMAGE" .
+          set +e
+          out="$(docker run --rm "$IMAGE" 2>&1)"
+          rc=$?
+          set -e
+          echo "$out"
+          [ "$rc" -eq 1 ] || { echo "expected exit 1 for missing config, got $rc"; exit 1; }
+          case "$out" in
+            *"missing required environment"*) echo "ok: image starts, links and reports missing config" ;;
+            *) echo "unexpected output from the image"; exit 1 ;;
+          esac
